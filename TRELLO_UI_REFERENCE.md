@@ -36,8 +36,8 @@ Trello groups addition actions in the right sidebar. Due to responsiveness or st
 ## 3. Popovers (Crucial Dynamics)
 
 Trello uses a global popover container that floats above the DOM. This makes scoped searches sometimes fail if you only search within the card modal. 
-*   **Global Popover Container**: `[data-testid="popover-container"]` or `[role="dialog"]` (specifically the last one in the DOM).
-*   **Popover Close Button**: `[data-testid="popover-close-button"]` or pressing "Escape".
+*   **Global Popover Container**: `[data-testid="popover-container"]` or `[role="dialog"]` (specifically the last one in the DOM). ALWAYS scope searches within this container when interacting with popover elements to avoid accidentally clicking global elements (like the main header's "Create board" button).
+*   **Popover Close Button**: `[data-testid="popover-close-button"]`. (Avoid pressing "Escape" to close popovers during automation, as it might accidentally close the entire card modal if the popover closed quickly on its own).
 
 ### A. Labels Popover
 1.  **Search Input**: 
@@ -50,7 +50,7 @@ Trello uses a global popover container that floats above the DOM. This makes sco
     *   **Create Button**: `button:has-text("Create a new label")`
     *   **Title Input**: The `input[type="text"]` found near `label:has-text("Title")`
     *   **Color Selection**: `button[data-testid="color-tile-{color_val}"]` (e.g., `color-tile-green`. *Note: avoid matching just `data-color="green"` as it might ambiguously click `green_light` or `green_dark` versions.*)
-    *   **Submit Button**: `[data-testid="create-label-submit-button"]` or `button:has-text("Create")`
+    *   **Submit Button**: `[data-testid="create-label-submit-button"]` or `.locator('[data-testid="popover-container"], [role="dialog"]').last.locator('button').filter(has_text=re.compile(r"^Create$"))`
 
 ### B. Checklist Popover
 1.  **Add Checklist Confirmation Button**: `[data-testid="checklist-add-button"]`
@@ -80,5 +80,6 @@ Trello uses a global popover container that floats above the DOM. This makes sco
 ## 5. Playwright Automation Best Practices for Trello
 1.  **`force=True` on Clicks**: Trello's heavy use of absolute positioned overlapping layers (Atlantis components) can frequently result in "element intercepts pointer events" errors. Use `click(force=True)` for elements like checkboxes and sidebar buttons.
 2.  **Patience with Popovers**: Always `page.wait_for_timeout(500)` or explicitly wait for the `[data-testid="popover-container"]` visibility after clicking a button that should spawn a popover.
-3.  **Closing Popovers Safely**: Send `page.keyboard.press("Escape")` after finishing a popover interaction. A lingering popover blocks clicks on elements underneath it.
+3.  **Closing Popovers Safely**: Do not blindly send `page.keyboard.press("Escape")`. Use `[data-testid="popover-close-button"]` instead. If Trello autorenders away a popover, hitting Escape will accidentally close the card modal underneath it.
 4.  **Dynamic Rendering of Modals**: Always re-query `.locator()` structures instead of saving locators into memory for long periods, as React re-renders will cause `ElementHandle` or strict locators to go stale.
+5.  **Scope Within Active Popover**: Use `page.locator('[data-testid="popover-container"], [role="dialog"]').last` as your parent container when interacting with popover content (e.g., searching for a "Create" or "Add" button). Trello's DOM is large and global searches can accidentally interact with the wrong elements.
