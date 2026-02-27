@@ -259,32 +259,43 @@ def create_card(page, list_container, card_data):
                         # 3. Create if not found
                         create_btn = page.locator('button:has-text("Create a new label")')
                         if create_btn.count() > 0:
-                            create_btn.click()
+                            create_btn.click(force=True)
                             page.wait_for_timeout(500)
-                            name_in = page.get_by_placeholder("Enter a name for this label")
+                            
+                            # Find the label title input
+                            name_in = page.locator('label:has-text("Title")').locator("..").locator("input[type='text']").first
+                            if name_in.count() == 0:
+                                name_in = page.locator('input[type="text"]').last
                             if name_in.count() > 0:
                                 name_in.fill(label_name)
                             
                             if not isinstance(label, str) and label.get("color"):
-                                color_btn = page.locator(f'button[data-color="{label["color"]}"]')
+                                color_val = label["color"]
+                                # match exactly the color tile testid (not the light/dark version unless specified)
+                                color_btn = page.locator(f'button[data-color="{color_val}"], button[data-testid="color-tile-{color_val}"]').first
                                 if color_btn.count() > 0:
-                                    color_btn.click()
+                                    color_btn.click(force=True)
                             
                             submit_btn = page.get_by_test_id("create-label-submit-button")
+                            if submit_btn.count() == 0:
+                                submit_btn = page.locator('[data-testid="popover-container"], [role="dialog"]').last.locator('button').filter(has_text=re.compile(r"^Create$"))
+                            
                             if submit_btn.count() > 0:
-                                submit_btn.click()
+                                submit_btn.first.click(force=True)
                                 page.wait_for_timeout(500)
+                                print(f"    ✓ Created new label '{label_name}'")
                                 found = True
+                            else:
+                                print(f"    × Could not find 'Create' submit button for label '{label_name}'")
                 else:
                     print(f"    × Search input not found in labels popover for '{label_name}'")
                     
-                # Close popover after each label to be safe
-                page.keyboard.press("Escape")
-                page.wait_for_timeout(500)
-                # If popover still there, try again
+                # Close popover safely without hitting Escape (which might close the card)
                 if page.locator('[data-testid="popover-container"]').count() > 0:
-                     page.locator('[data-testid="popover-close-button"]').first.click() if page.locator('[data-testid="popover-close-button"]').count() > 0 else None
-                     page.wait_for_timeout(500)
+                    close_btn = page.locator('[data-testid="popover-close-button"]').first
+                    if close_btn.count() > 0:
+                        close_btn.click(force=True)
+                    page.wait_for_timeout(500)
             
             print(f"  Labels added for '{card_data['title']}'")
         except Exception as e:
