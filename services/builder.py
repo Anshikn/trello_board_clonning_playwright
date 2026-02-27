@@ -83,6 +83,7 @@ def create_card(page, list_container, card_data):
         or card_data.get("comments")
         or card_data.get("labels")
         or card_data.get("attachments")
+        or card_data.get("cover")
     )
 
     # Activate composer if needed
@@ -361,7 +362,7 @@ def create_card(page, list_container, card_data):
                 if not att_url:
                     continue
                 
-                # Click the "Attachment" button (sidebar or main)
+                # Click the "Attachment" button
                 att_btn = dialog.locator('button:has-text("Attachment")')
                 if att_btn.count() == 0:
                     att_btn = dialog.locator('button:has([data-testid="AttachmentIcon"])')
@@ -370,38 +371,90 @@ def create_card(page, list_container, card_data):
                     att_btn.first.click(force=True)
                     page.wait_for_timeout(1000)
                     
-                    search_input_att = page.get_by_placeholder("Paste any link here...")
+                    # Use absolute popover scoping for inputs to avoid multiple matches
+                    popover = page.locator('[data-testid="popover-container"], [role="dialog"]').last
+                    
+                    search_input_att = popover.get_by_placeholder("Paste any link here...")
                     if search_input_att.count() > 0:
                         search_input_att.fill(att_url)
                         page.wait_for_timeout(500)
                         
                         # Optionally fill the name
-                        name_in_att = page.locator('input[id="attachmentName"]')
+                        name_in_att = popover.locator('input[id="attachmentName"]')
                         if name_in_att.count() > 0 and att_name:
                             name_in_att.fill(att_name)
                         
-                        # Click Add / Insert - be very specific
-                        # The button usually has text "Add" or "Insert"
-                        possible_btns = page.locator('button').filter(has_text="Add")
-                        insert_btns = page.locator('button').filter(has_text="Insert")
-                        
-                        target_btn = None
-                        if insert_btns.count() > 0:
-                             target_btn = insert_btns.last
-                        elif possible_btns.count() > 0:
-                             target_btn = possible_btns.last
-                             
-                        if target_btn:
+                        # Click Add / Insert inside the popover
+                        target_btn = popover.locator('button:has-text("Insert"), button:has-text("Add")').last
+                        if target_btn.count() > 0:
                             target_btn.click()
-                            page.wait_for_timeout(2000)
+                            # IMPORTANT: Wait for the attachment to actually upload/process
+                            print(f"    - Uploading attachment: {att_name}...")
+                            page.wait_for_timeout(3000) 
                         else:
-                            # Fallback to general search
-                            page.locator('button:has-text("Insert"), button:has-text("Add")').last.click()
-                            page.wait_for_timeout(2000)
+                            print(f"    × Could not find 'Add' button for attachment")
             
             print(f"  Attachments added for '{card_data['title']}'")
         except Exception as e:
             print(f"  Warning: Failed to add attachments for '{card_data['title']}': {e}")
+
+    # ---- COVER ----
+    if card_data.get("cover"):
+        try:
+            cover_data = card_data["cover"]
+            # Open Cover popover
+            cover_btn = dialog.locator('[data-testid="card-back-cover-button"]')
+            if cover_btn.count() == 0:
+                cover_btn = dialog.locator('button:has-text("Cover")')
+            
+            if cover_btn.count() > 0:
+                cover_btn.first.click(force=True)
+                page.wait_for_timeout(1000)
+                
+                popover = page.locator('[data-testid="popover-container"], [role="dialog"]').last
+                
+                if cover_data.get("type") == "color":
+                    color_val = cover_data.get("value") or cover_data.get("style")
+                    color_btn = popover.locator(f'button[data-color="{color_val}"], button[data-testid*="color-tile-{color_val}"]').first
+                    if color_btn.count() == 0 and "rgb" in str(color_val):
+                        color_btn = popover.locator(f'button[style*="{color_val}"]').first
+                    
+                    if color_btn.count() > 0:
+                        color_btn.click(force=True)
+                        page.wait_for_timeout(500)
+                        print(f"    ✓ Set color cover: {color_val}")
+                    else:
+                        print(f"    × Could not find color tile for '{color_val}'")
+                
+                elif cover_data.get("type") == "image":
+                    # For images, give Trello even more time to process the added attachments
+                    page.wait_for_timeout(3000)
+                    
+                    # Re-locate popover as it might have refreshed
+                    popover = page.locator('[data-testid="popover-container"], [role="dialog"]').last
+                    att_covers = popover.locator('[data-testid="cover-attachment-item"]')
+                    
+                    if att_covers.count() > 0:
+                        att_covers.first.click()
+                        page.wait_for_timeout(500)
+                        print(f"    ✓ Set image cover from attachment")
+                    else:
+                        img_btns = popover.locator('button[style*="background-image"]')
+                        if img_btns.count() > 0:
+                            img_btns.first.click()
+                            page.wait_for_timeout(500)
+                            print(f"    ✓ Set image cover via background-image button")
+                
+                # Close popover via the close button specifically
+                close_pop_btn = popover.locator('[data-testid="popover-close-button"]')
+                if close_pop_btn.count() > 0:
+                    close_pop_btn.click(force=True)
+                else:
+                    page.keyboard.press("Escape")
+                page.wait_for_timeout(500)
+
+        except Exception as e:
+            print(f"  Warning: Failed to set cover for '{card_data['title']}': {e}")
 
     # ---- COMMENTS ----
     if card_data.get("comments"):

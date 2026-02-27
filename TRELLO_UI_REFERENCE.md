@@ -30,6 +30,7 @@ Trello groups addition actions in the right sidebar. Due to responsiveness or st
 *   **Labels**: `[data-testid="card-back-labels-button"]` or `button:has-text("Labels")`
 *   **Checklist**: `button:has([data-testid="ChecklistIcon"])` or `button:has-text("Checklist")`
 *   **Attachment**: `button:has([data-testid="AttachmentIcon"])` or `button:has-text("Attachment")`
+*   **Cover**: `[data-testid="card-back-cover-button"]` or `button:has-text("Cover")`
 
 ---
 
@@ -64,6 +65,17 @@ Trello uses a global popover container that floats above the DOM. This makes sco
 1.  **URL Input (Paste Link)**: `input[placeholder*="Paste any link"]`
 2.  **Name Input (Display Text)**: `input#attachmentName`
 3.  **Insert/Add Button**: `button:has-text("Insert")` or `button:has-text("Add")` or `[data-testid="attachment-add-submit-button"]`
+4.  **Attachment List**: `[data-testid="attachment-list"]`
+5.  **Attachment Item**: `[data-testid="attachment-thumbnail"]`
+
+### D. Cover Popover
+1.  **Color Selections**:
+    *   **Color Tile**: `button[data-color="{color_val}"]`
+    *   **Specific Hex Tile**: `button[data-testid*="color-tile-{color_val}"]`
+2.  **Image Selections (From Attachments)**: 
+    *   **Select Item**: `[data-testid="cover-attachment-item"]`
+    *   **Image Button**: `button[style*="background-image"]` (Useful as fallback if specific test-ids are missing).
+3.  **Remove Cover**: `button:has-text("Remove cover")`
 
 ---
 
@@ -83,3 +95,5 @@ Trello uses a global popover container that floats above the DOM. This makes sco
 3.  **Closing Popovers Safely**: Do not blindly send `page.keyboard.press("Escape")`. Use `[data-testid="popover-close-button"]` instead. If Trello autorenders away a popover, hitting Escape will accidentally close the card modal underneath it.
 4.  **Dynamic Rendering of Modals**: Always re-query `.locator()` structures instead of saving locators into memory for long periods, as React re-renders will cause `ElementHandle` or strict locators to go stale.
 5.  **Scope Within Active Popover**: Use `page.locator('[data-testid="popover-container"], [role="dialog"]').last` as your parent container when interacting with popover content (e.g., searching for a "Create" or "Add" button). Trello's DOM is large and global searches can accidentally interact with the wrong elements.
+6.  **Wait for Attachment Processing**: When uploading a new attachment by link, wait at least **3000ms** before trying to set it as a cover. Trello won't show the attachment in the Cover menu until it has finished processing the URL on their back-end.
+7.  **Identify Covers via Card Header**: Card covers can be extracted from `[data-testid="card-back-cover-container"]`.

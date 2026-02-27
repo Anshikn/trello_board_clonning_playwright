@@ -119,8 +119,44 @@ def extract_card(page, card_locator):
                 url = el.get_attribute("href") or ""
                 name_el = el.locator('..').locator('[data-testid="attachment-thumbnail-name"]')
                 name = name_el.inner_text().strip() if name_el.count() > 0 else ""
+                
+                # Check if this specific attachment is the cover
+                # Trello adds a "Cover" badge to the thumbnail in the list
+                is_cover = el.locator('..').locator('text="Cover"').count() > 0
+                
                 if url:
-                    attachments.append({"name": name, "url": url})
+                    attachments.append({
+                        "name": name, 
+                        "url": url,
+                        "is_cover": is_cover
+                    })
+    except Exception:
+        pass
+
+    # ---- COVER (Directly from header) ----
+    cover = None
+    try:
+        # Trello covers are in card-back-cover section
+        cover_container = page.locator('[data-testid="card-back-cover-container"]')
+        if cover_container.count() == 0:
+            cover_container = page.locator('[data-testid="card-cover"]')
+            
+        if cover_container.count() > 0:
+            style = cover_container.get_attribute("style") or ""
+            if "background-image" in style:
+                cover = {"type": "image", "style": style}
+            else:
+                color = cover_container.get_attribute("data-color")
+                if not color:
+                    # Look for child with color
+                    child_color = cover_container.locator('[data-color]').first
+                    if child_color.count() > 0:
+                        color = child_color.get_attribute("data-color")
+                
+                if color:
+                    cover = {"type": "color", "value": color}
+                else:
+                    cover = {"type": "color", "style": style}
     except Exception:
         pass
 
@@ -152,5 +188,6 @@ def extract_card(page, card_locator):
         "checklist": checklist_items,
         "due_date": due_date,
         "attachments": attachments,
+        "cover": cover,
         "comments": comments
     }
