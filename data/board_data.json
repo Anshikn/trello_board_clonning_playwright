@@ -26,7 +26,8 @@
           {
             "name": "Screenshot 2026-02-18 at 1.47.04\u202fPM.png",
             "url": "https://trello.com/1/cards/6995bcb951aff5dc3113485b/attachments/6995bd491b598fc747ff294e/download/Screenshot_2026-02-18_at_1.47.04_PM.png",
-            "is_cover": true
+            "is_cover": true,
+            "local_path": "/Users/admin/Desktop/adhil/TestingPlaywright/trello_cloning/data/attachments/Screenshot 2026-02-18 at 1.47.04PM.png"
           }
         ],
         "cover": {
@@ -45,24 +46,6 @@
         "due_date": "",
         "attachments": [],
         "cover": null,
-        "comments": []
-      }
-    ]
-  },
-  {
-    "list_title": "Test",
-    "cards": [
-      {
-        "title": "Testing",
-        "description": "something to check",
-        "labels": [],
-        "checklist": [],
-        "due_date": "",
-        "attachments": [],
-        "cover": {
-          "type": "image",
-          "style": "background-image: url(\"https://trello-backgrounds.s3.amazonaws.com/SharedBackground/480x289/e786724558f10fd9685c2b3a0a6966d7/photo-1741812191037-96bb5f12010a.webp\"); background-color: rgb(250, 153, 43); background-size: contain; min-height: 116px; height: 160px; max-height: 160px; background-position-y: 50%;"
-        },
         "comments": []
       }
     ]

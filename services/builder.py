@@ -1,58 +1,31 @@
 from utils.retry import retry
 import re
+import os
 
 
 def create_board(page, board_name):
+    """Creates a new Trello board with the given name."""
     page.goto("https://trello.com/")
     page.get_by_test_id("header-create-menu-button").wait_for(state="visible")
     page.get_by_test_id("header-create-menu-button").click()
-    
-    # Wait for the popover/menu to stabilize
     page.wait_for_timeout(1000)
-    
-    # Wait for the popover/menu to appear
-    # Trello header can be tricky. Let's look for any button that looks like 'Create board'
-    create_menu_options = [
-        page.get_by_test_id("header-create-board-button"),
-        page.locator('button').filter(has_text="Create board"),
-        page.locator('span').filter(has_text="Create board"),
-        page.get_by_text("Create board")
-    ]
-    
-    found_opt = None
-    for opt in create_menu_options:
-        if opt.count() > 0 and opt.first.is_visible():
-            found_opt = opt.first
-            break
-            
-    if not found_opt:
-        # Wait a bit longer if not found immediately
-        page.wait_for_timeout(2000)
-        for opt in create_menu_options:
-            if opt.count() > 0:
-                found_opt = opt.first
-                break
-                
-    if found_opt:
-        found_opt.click(force=True)
-    else:
-        # Final attempt with broad search
-        page.locator('button:has-text("Create board")').first.click()
-    
+
+    # Click "Create board"
+    create_btn = page.get_by_test_id("header-create-board-button")
+    if create_btn.count() == 0:
+        create_btn = page.get_by_text("Create board").first
+    create_btn.click(force=True)
+
     page.get_by_test_id("create-board-title-input").wait_for(state="visible")
     page.get_by_test_id("create-board-title-input").fill(board_name)
     page.get_by_test_id("create-board-submit-button").click()
-    
-    # Wait for the board name to appear in the header (indicates board is ready)
     page.get_by_test_id("board-name-display").wait_for(state="visible", timeout=30000)
 
 
 def rebuild_board(page, board_data):
-
+    """Rebuilds a board from extracted data."""
     for lst in board_data:
-
-        # Add list
-        # Sometimes Trello shows "Add another list" button if the input is closed
+        # Click "Add another list" button if the input is collapsed
         add_btn = page.get_by_role("button", name="Add another list", exact=True)
         if add_btn.count() > 0 and add_btn.is_visible():
             add_btn.click(force=True)
@@ -60,12 +33,14 @@ def rebuild_board(page, board_data):
         add_list_input = page.get_by_placeholder("Enter list name...")
         if add_list_input.count() == 0:
             add_list_input = page.locator('[placeholder*="Enter list name"]')
-
         add_list_input.first.fill(lst["list_title"])
         page.keyboard.press("Enter")
-        page.wait_for_timeout(1000)
 
-        # Find the list container by its title
+        # Wait for list to appear
+        page.locator('[data-testid="list"]').filter(
+            has_text=lst["list_title"]
+        ).first.wait_for(state="visible")
+
         list_container = page.locator('[data-testid="list"]').filter(
             has_text=lst["list_title"]
         ).first
@@ -74,9 +49,553 @@ def rebuild_board(page, board_data):
             create_card(page, list_container, card)
 
 
-@retry(times=3, delay=2)
-def create_card(page, list_container, card_data):
+def _open_card_modal(page, list_container, card_title):
+    """Opens the card modal and returns the dialog locator."""
+    # First try scoped to the list
+    card = list_container.locator('[data-testid="card-name"]').filter(
+        has_text=card_title
+    ).first
+    if card.count() > 0 and card.is_visible():
+        card.click()
+    else:
+        # Fallback: search anywhere
+        fallback_card = page.locator('[data-testid="card-name"]').filter(has_text=card_title).first
+        if fallback_card.count() > 0:
+            fallback_card.click()
+        else:
+            page.get_by_text(card_title).first.click()
 
+    # The modal root element: data-testid="card-back-name" with role="dialog"
+    dialog = page.locator('[data-testid="card-back-name"]')
+    dialog.wait_for(state="visible", timeout=15000)
+    page.wait_for_timeout(500)
+    return dialog
+
+
+def _close_card_modal(page):
+    """Closes the card modal reliably."""
+    close_btn = page.locator('button[aria-label="Close dialog"]')
+    if close_btn.count() > 0 and close_btn.first.is_visible():
+        close_btn.first.click(force=True)
+    else:
+        page.keyboard.press("Escape")
+    page.wait_for_timeout(500)
+
+    # Wait for modal to disappear
+    try:
+        page.locator('[data-testid="card-back-name"]').wait_for(state="hidden", timeout=5000)
+    except:
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(500)
+
+
+def _close_popover(page):
+    """Closes any open popover safely without pressing ESC (which might close the modal)."""
+    close_btn = page.locator('[data-testid="popover-close-button"]')
+    if close_btn.count() > 0 and close_btn.first.is_visible():
+        close_btn.first.click(force=True)
+        page.wait_for_timeout(300)
+    else:
+        # Click the card title area to dismiss any open dropdown safely
+        header = page.locator('[data-testid="card-back-name"]')
+        if header.count() > 0 and header.first.is_visible():
+            header.first.click(force=True)
+            page.wait_for_timeout(300)
+        
+        # If any popover-like generic containers are still open (e.g. Actions menu)
+        # press Escape as a last resort, but carefully.
+        if page.locator('[role="menu"]').count() > 0:
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(300)
+
+
+def _add_description(page, dialog, description):
+    """Adds a description to the card."""
+    try:
+        # On a NEW card, description section shows a clickable placeholder area
+        # Look for the "Add a more detailed description" text/button area
+        desc_placeholder = page.locator('[data-testid="click-wrapper"]')
+        desc_edit_btn = page.locator('[data-testid="description-edit-button"]')
+
+        if desc_placeholder.count() > 0 and desc_placeholder.first.is_visible():
+            desc_placeholder.first.click()
+        elif desc_edit_btn.count() > 0 and desc_edit_btn.first.is_visible():
+            desc_edit_btn.first.click()
+        else:
+            # Fallback: click the description content area or any area near "Description"
+            desc_area = page.get_by_text("Add a more detailed description")
+            if desc_area.count() > 0:
+                desc_area.first.click()
+            else:
+                print(f"    × Could not find description editor trigger")
+                return
+
+        page.wait_for_timeout(800)
+
+        # The editor is a rich text ProseMirror/Atlassian editor
+        # MUST scope within the dialog to avoid hitting the board-name textbox
+        editor = dialog.locator('[role="textbox"]')
+        if editor.count() == 0:
+            editor = dialog.locator('.ak-editor-content-area [role="textbox"]')
+        if editor.count() == 0:
+            editor = page.locator('.ak-editor-content-area [role="textbox"]')
+
+        if editor.count() > 0 and editor.first.is_visible():
+            editor.first.click(force=True)
+            editor.first.fill(description)
+            page.wait_for_timeout(300)
+        else:
+            # Fallback to any visible textarea that's not the title
+            textarea = page.locator('textarea:visible').last
+            if textarea.count() > 0:
+                textarea.fill(description)
+            else:
+                print(f"    × No editor found for description")
+                return
+
+        # Click Save
+        save_btn = page.locator('[data-testid="description-save-button"]')
+        if save_btn.count() == 0:
+            save_btn = page.locator('button:has-text("Save")').first
+        if save_btn.count() > 0 and save_btn.first.is_visible():
+            save_btn.first.click()
+            page.wait_for_timeout(500)
+
+        print(f"    ✓ Description added")
+    except Exception as e:
+        print(f"    × Description failed: {e}")
+
+
+def _add_labels(page, dialog, labels):
+    """Adds labels to the card."""
+    try:
+        for label_data in labels:
+            label_name = label_data["name"] if isinstance(label_data, dict) else label_data
+            label_color = label_data.get("color", "") if isinstance(label_data, dict) else ""
+
+            opened = False
+            search_placeholder_query = 'input[placeholder*="Search labels"]'
+
+            # Method 1: The inline toolbar "Labels" button
+            labels_toolbar_btns = page.locator('button:has-text("Labels")')
+            for idx in range(labels_toolbar_btns.count()):
+                btn = labels_toolbar_btns.nth(idx)
+                if btn.is_visible():
+                    btn.click(force=True)
+                    page.wait_for_timeout(800)
+                    if page.locator(search_placeholder_query).count() > 0:
+                        opened = True
+                        break
+                    _close_popover(page)
+
+            # Method 1b: Sidebar "Labels" button with data-testid
+            if not opened:
+                labels_sidebars = page.locator('[data-testid="card-back-labels-button"]')
+                for idx in range(labels_sidebars.count()):
+                    btn = labels_sidebars.nth(idx)
+                    if btn.is_visible():
+                        btn.click(force=True)
+                        page.wait_for_timeout(800)
+                        if page.locator(search_placeholder_query).count() > 0:
+                            opened = True
+                            break
+                        _close_popover(page)
+
+            # Method 1c: "Add a label" button (+ button inside existing labels row)
+            if not opened:
+                add_label_btns = page.locator('button[aria-label="Add a label"]')
+                for idx in range(add_label_btns.count()):
+                    btn = add_label_btns.nth(idx)
+                    if btn.is_visible():
+                        btn.click(force=True)
+                        page.wait_for_timeout(800)
+                        if page.locator(search_placeholder_query).count() > 0:
+                            opened = True
+                            break
+                        _close_popover(page)
+
+            # Method 2: Use the Actions menu (3-dot button at top of card) → Labels
+            if not opened:
+                actions_btn = page.locator('[data-testid="card-back-actions-button"]')
+                if actions_btn.count() > 0 and actions_btn.first.is_visible():
+                    actions_btn.first.click(force=True)
+                    page.wait_for_timeout(800)
+                    popover = page.locator('[role="menu"], [data-testid="popover-container"], [role="dialog"]').last
+                    if popover.count() > 0 and popover.is_visible():
+                        label_opt = popover.get_by_text("Labels")
+                        if label_opt.count() > 0:
+                            label_opt.first.click(force=True)
+                            page.wait_for_timeout(800)
+                            if page.locator(search_placeholder_query).count() > 0:
+                                opened = True
+                        if not opened:
+                            _close_popover(page)
+
+            # Method 3: Click inline "Add" button → popover → Labels
+            if not opened:
+                add_to_card = page.locator('[data-testid="card-back-add-to-card-button"]')
+                if add_to_card.count() > 0 and add_to_card.first.is_visible():
+                    add_to_card.first.click(force=True)
+                    page.wait_for_timeout(800)
+                    popover = page.locator('[data-testid="popover-container"]')
+                    if popover.count() > 0 and popover.first.is_visible():
+                        label_opt = popover.get_by_text("Labels")
+                        if label_opt.count() > 0:
+                            label_opt.first.click(force=True)
+                            page.wait_for_timeout(800)
+                            opened = True
+                        else:
+                            _close_popover(page)
+
+            if not opened:
+                page.screenshot(path="debug_labels_fail.png", full_page=True)
+                print(f"    × Could not open labels popover (screenshot saved)")
+                continue
+
+            # Search and select the label
+            search_input = page.locator(search_placeholder_query).first
+            if search_input.count() > 0 and search_input.is_visible():
+                search_input.fill(label_name)
+                page.wait_for_timeout(800)
+
+                # Look for matching label in popover scope
+                popover = page.locator('[data-testid="popover-container"], [role="dialog"]').last
+                
+                # Use a filter for exact name matching to avoid "different label is adding" issue
+                label_el = popover.locator('[data-testid="card-label"]').filter(has_text=re.compile(f'^{re.escape(label_name)}$'))
+                if label_el.count() == 0:
+                    label_el = popover.locator(f':text("{label_name}")').filter(has_text=re.compile(f'^{re.escape(label_name)}$'))
+
+                if label_el.count() > 0:
+                    # Check if already selected to avoid toggling it OFF
+                    # Selected labels usually have a checkmark icon
+                    is_selected = label_el.first.locator('[data-testid="card-label-checkmark"]').count() > 0 or \
+                                  label_el.first.locator('svg[data-testid="CheckIcon"]').count() > 0
+                    
+                    if not is_selected:
+                        label_el.first.click(force=True)
+                        page.wait_for_timeout(300)
+                        print(f"    ✓ Label '{label_name}' selected")
+                    else:
+                        print(f"    - Label '{label_name}' already selected")
+                else:
+                    # Create a new label
+                    create_label_btn = popover.get_by_text("Create a new label")
+                    if create_label_btn.count() > 0:
+                        create_label_btn.first.click()
+                        page.wait_for_timeout(500)
+
+                        # Fill name
+                        name_input = popover.locator('input').first
+                        if name_input.count() > 0:
+                            name_input.fill(label_name)
+
+                        # Select color
+                        if label_color:
+                            # Try the test-id pattern first as seen in codegen
+                            color_btn = popover.get_by_test_id(f"color-tile-{label_color}").first
+                            if color_btn.count() == 0:
+                                color_btn = popover.locator(f'button[data-color="{label_color}"]').first
+                                
+                            if color_btn.count() > 0:
+                                color_btn.click(force=True)
+
+                        # Submit
+                        submit = popover.locator('button').filter(has_text=re.compile(r"^Create$"))
+                        if submit.count() > 0:
+                            submit.first.click(force=True)
+                            page.wait_for_timeout(500)
+                            print(f"    ✓ Created label '{label_name}'")
+                        else:
+                            print(f"    × No Create button for label")
+
+            _close_popover(page)
+
+        print(f"    Labels done")
+    except Exception as e:
+        print(f"    × Labels failed: {e}")
+        _close_popover(page)
+
+
+def _add_checklist(page, dialog, checklist_items):
+    """Adds a checklist to the card."""
+    try:
+        # Find the Checklist button
+        checklist_btn = page.locator('button:has([data-testid="ChecklistIcon"])')
+        if checklist_btn.count() == 0:
+            checklist_btn = page.get_by_role("button", name="Checklist")
+
+        if checklist_btn.count() == 0:
+            print(f"    × No Checklist button found")
+            return
+
+        checklist_btn.first.click(force=True)
+        page.wait_for_timeout(800)
+
+        # A popover appears asking for checklist title
+        popover = page.locator('[data-testid="popover-container"], [role="dialog"]').last
+        title_input = popover.locator('input[placeholder*="Checklist"], input[id*="checklist"]').first
+        if title_input.count() == 0:
+            title_input = popover.locator('input').first
+
+        if title_input.count() > 0:
+            # We can use default 'Checklist' or set a custom name if we had one
+            # The Add button confirms it
+            add_btn = popover.locator('button').filter(has_text=re.compile(r"^(Add|Create)$"))
+            if add_btn.count() > 0:
+                add_btn.first.click()
+                page.wait_for_timeout(1000)
+
+        # Now checklist section should be visible in the card
+        # Look for the "Add an item" button/input inside the checklist section
+        for item in checklist_items:
+            item_name = item["name"] if isinstance(item, dict) else item
+            is_checked = item.get("checked", False) if isinstance(item, dict) else False
+
+            # Trello usually autofocuses the "Add an item" input after checklist creation
+            # or after adding an item.
+            item_input = page.get_by_placeholder("Add an item")
+            if item_input.count() == 0 or not item_input.first.is_visible():
+                add_item_btn = page.get_by_role("button", name="Add an item")
+                if add_item_btn.count() > 0 and add_item_btn.first.is_visible():
+                    add_item_btn.first.click()
+                    page.wait_for_timeout(300)
+                item_input = page.get_by_placeholder("Add an item")
+
+            if item_input.count() > 0:
+                item_input.first.fill(item_name)
+                page.wait_for_timeout(200)
+                page.keyboard.press("Enter")
+                page.wait_for_timeout(500)
+
+                # Check the item if needed
+                if is_checked:
+                    # Look for the recently added item to check it
+                    item_row = page.locator('[data-testid="check-item-container"]').filter(has_text=item_name).last
+                    if item_row.count() > 0:
+                        checkbox = item_row.locator('[data-testid="clickable-checkbox"]')
+                        if checkbox.count() > 0:
+                            checkbox.click()
+                            page.wait_for_timeout(300)
+                            print(f"      ✓ Checked: '{item_name}'")
+
+        # We don't press Escape here as it might close the entire card modal.
+        # Instead, we just wait a bit.
+        page.wait_for_timeout(300)
+
+        print(f"    ✓ Checklist done ({len(checklist_items)} items)")
+    except Exception as e:
+        print(f"    × Checklist failed: {e}")
+
+
+def _add_attachments(page, dialog, attachments):
+    """Adds attachments to the card."""
+    try:
+        for att in attachments:
+            att_name = att.get("name", "") if isinstance(att, dict) else att
+            att_url = att.get("url", "") if isinstance(att, dict) else ""
+            local_path = att.get("local_path", "") if isinstance(att, dict) else ""
+
+            if not att_url and not local_path:
+                continue
+
+            # Find and click the Attachment button using exact text/role from codegen
+            opened = False
+            paste_link_query = 'input[placeholder*="Paste any link"]'
+            
+            # Ensure dialog is open!
+            if dialog.count() == 0 or not dialog.is_visible():
+                print("    ! Card modal closed unexpectedly, re-opening...")
+                page.get_by_text(att_name).first.click(force=True) # This is a bit risky, but let's try
+                page.wait_for_timeout(1000)
+
+            # Use Playwright's canonical get_by_role matching text "Attachment"
+            att_btn = page.get_by_role("button", name="Attachment", exact=True).first
+            if att_btn.count() > 0 and att_btn.is_visible():
+                att_btn.click(force=True)
+                page.wait_for_timeout(1000)
+                if page.locator(paste_link_query).count() > 0 or page.get_by_role("button", name="Choose a file").count() > 0:
+                    opened = True
+
+            # If it's still not found, try getting by testid just in case
+            if not opened:
+                att_btn_icon = page.locator('button:has([data-testid="AttachmentIcon"])').first
+                if att_btn_icon.count() > 0 and att_btn_icon.is_visible():
+                    att_btn_icon.click(force=True)
+                    page.wait_for_timeout(1000)
+                    if page.locator(paste_link_query).count() > 0 or page.get_by_role("button", name="Choose a file").count() > 0:
+                        opened = True
+
+            if not opened:
+                # One last try: "+ Add" button
+                add_btn = page.locator('button:has-text("Add")').filter(has_not=page.locator('[data-testid="card-back-name"]')).first
+                if add_btn.count() > 0:
+                    add_btn.click(force=True)
+                    page.wait_for_timeout(800)
+                    att_opt = page.get_by_text("Attachment")
+                    if att_opt.count() > 0:
+                        att_opt.first.click(force=True)
+                        page.wait_for_timeout(800)
+                        opened = True
+
+            if not opened:
+                page.screenshot(path="debug_attachment_fail.png", full_page=True)
+                print(f"    × No Attachment button found/popover didn't open (screenshot saved)")
+                continue
+
+            popover = page.locator('[data-testid="popover-container"], [role="dialog"]').last
+
+            if local_path and os.path.exists(local_path):
+                # Upload local file
+                try:
+                    # The element is a <label> with role="button", so we can't `set_input_files` on it directly.
+                    # We must use Playwright's file chooser interception.
+                    choose_file_btn = page.get_by_role("button", name="Choose a file")
+                    if choose_file_btn.count() > 0:
+                        with page.expect_file_chooser(timeout=5000) as fc:
+                            choose_file_btn.first.click(force=True)
+                        fc.value.set_files(local_path)
+                    else:
+                        # Fallback to hidden file input
+                        file_input = page.locator('input[type="file"]')
+                        if file_input.count() > 0:
+                            file_input.first.set_input_files(local_path)
+                        else:
+                            print(f"    × Could not find 'Choose a file' button or input")
+                            _close_popover(page)
+                            continue
+
+                    # Wait for upload to complete by waiting for the attachment to appear in the card
+                    # Trello shows a progress bar, then the thumbnail appears.
+                    print(f"    - Uploading '{att_name}'...")
+                    try:
+                        # Wait for the item to appear in the attachment list with matching name
+                        # We use a 30s timeout for larger uploads
+                        page.locator('[data-testid="attachment-list"]').locator(f'text="{att_name}"').wait_for(state="visible", timeout=30000)
+                        print(f"    ✓ Uploaded: {att_name}")
+                    except:
+                        # Fallback simple wait if locator fails
+                        page.wait_for_timeout(5000)
+                        print(f"    ✓ Uploaded: {att_name} (wait fallback)")
+                except Exception as e:
+                    print(f"    × Upload failed for '{att_name}': {e}")
+                    _close_popover(page)
+            else:
+                # Paste link
+                link_input = popover.get_by_placeholder("Paste any link here...")
+                if link_input.count() > 0 and link_input.first.is_visible():
+                    link_input.first.fill(att_url)
+                    page.wait_for_timeout(300)
+
+                    insert_btn = popover.locator('button').filter(has_text=re.compile(r"(Insert|Attach)"))
+                    if insert_btn.count() > 0:
+                        insert_btn.first.click()
+                        page.wait_for_timeout(2000)
+                        print(f"    ✓ Link attached: {att_name}")
+                    else:
+                        print(f"    × No Insert/Attach button")
+                        _close_popover(page)
+                else:
+                    print(f"    × No link input in attachment popover")
+                    _close_popover(page)
+
+        print(f"    Attachments done")
+    except Exception as e:
+        print(f"    × Attachments failed: {e}")
+        _close_popover(page)
+
+
+def _add_comments(page, dialog, comments):
+    """Adds comments to the card."""
+    try:
+        for comment_text in comments:
+            # Click the "Write a comment…" skeleton button
+            comment_btn = page.locator('[data-testid="card-back-new-comment-input-skeleton"]')
+            if comment_btn.count() == 0 or not comment_btn.first.is_visible():
+                comment_btn = page.get_by_role("textbox", name="Write a comment")
+            if comment_btn.count() == 0 or not comment_btn.first.is_visible():
+                comment_btn = page.get_by_text("Write a comment")
+
+            if comment_btn.count() > 0 and comment_btn.first.is_visible():
+                comment_btn.first.click()
+                page.wait_for_timeout(1000)
+
+                # The rich text editor replaces the button
+                # Look for a role="textbox" or contenteditable element
+                editor = page.locator('[role="textbox"]').last
+                if editor.count() > 0 and editor.first.is_visible():
+                    editor.first.click()
+                    page.wait_for_timeout(200)
+                    page.keyboard.type(comment_text, delay=20)
+                    page.wait_for_timeout(300)
+                else:
+                    print(f"    × Comment editor not found")
+                    continue
+
+                # Click Save
+                save_btn = page.locator('[data-testid="card-back-comment-save-button"]')
+                if save_btn.count() == 0:
+                    save_btn = page.get_by_role("button", name="Save")
+                if save_btn.count() > 0 and save_btn.first.is_visible():
+                    save_btn.first.click()
+                    page.wait_for_timeout(1000)
+                    print(f"    ✓ Comment posted")
+                else:
+                    print(f"    × Save button not found for comment")
+            else:
+                print(f"    × 'Write a comment' button not found")
+
+        print(f"    Comments done ({len(comments)})")
+    except Exception as e:
+        print(f"    × Comments failed: {e}")
+
+
+def _add_cover(page, dialog, cover_data):
+    """Sets the card cover."""
+    try:
+        cover_btn = page.locator('[data-testid="card-back-cover-button"]')
+        if cover_btn.count() == 0:
+            cover_btn = page.locator('button[aria-label="Cover"]')
+        if cover_btn.count() == 0:
+            return
+
+        cover_btn.first.click(force=True)
+        page.wait_for_timeout(1000)
+
+        popover = page.locator('[data-testid="popover-container"]').last
+
+        if cover_data.get("type") == "color":
+            color_val = cover_data.get("value", "")
+            if color_val:
+                color_btn = popover.locator(f'button[data-color="{color_val}"]').first
+                if color_btn.count() > 0:
+                    color_btn.click(force=True)
+                    print(f"    ✓ Color cover set: {color_val}")
+
+        elif cover_data.get("type") == "image":
+            # Wait for attachment thumbnails to load in cover popover
+            page.wait_for_timeout(2000)
+            popover = page.locator('[data-testid="popover-container"]').last
+            att_covers = popover.locator('[data-testid="cover-attachment-item"]')
+            if att_covers.count() > 0:
+                att_covers.first.click()
+                print(f"    ✓ Image cover set")
+            else:
+                img_btns = popover.locator('button[style*="background-image"]')
+                if img_btns.count() > 0:
+                    img_btns.first.click()
+                    print(f"    ✓ Image cover set (fallback)")
+
+        _close_popover(page)
+    except Exception as e:
+        print(f"    × Cover failed: {e}")
+        _close_popover(page)
+
+
+@retry(times=2, delay=2)
+def create_card(page, list_container, card_data):
+    """Creates a card and fills in all its details."""
+    title = card_data["title"]
     has_details = (
         card_data.get("description")
         or card_data.get("checklist")
@@ -86,421 +605,51 @@ def create_card(page, list_container, card_data):
         or card_data.get("cover")
     )
 
-    # Activate composer if needed
+    # Create the card
     list_container.get_by_test_id("list-add-card-button").click()
-
     composer = list_container.get_by_test_id("list-card-composer-textarea")
-    composer.wait_for()
-
-    # ---- CREATE CARD ----
-    composer.fill(card_data["title"])
-    composer.press("Enter")
+    composer.wait_for(state="visible")
+    composer.fill(title)
+    
+    # Use explicit button click instead of Enter, as per codegen
+    add_button = list_container.get_by_test_id("list-card-composer-add-card-button")
+    if add_button.count() > 0:
+        add_button.click()
+    else:
+        composer.press("Enter")
+        
     page.wait_for_timeout(500)
-
-    # Close the composer so it doesn't interfere
     page.keyboard.press("Escape")
     page.wait_for_timeout(500)
 
-    # If card has no extra details, skip opening the modal
     if not has_details:
-        print(f"  Card '{card_data['title']}' created (no details to add)")
+        print(f"  Card '{title}' created (no details)")
         return
 
-    # Open the newly created card by clicking it
-    card = list_container.locator('[data-testid="card-name"]').filter(
-        has_text=card_data["title"]
-    ).first
-    card.click()
+    # Open card modal
+    print(f"  Opening card '{title}'...")
+    dialog = _open_card_modal(page, list_container, title)
 
-    # Wait for the card modal to load
-    page.get_by_test_id("card-back-name").wait_for(state="visible", timeout=10000)
-    page.wait_for_timeout(1000)
-
-    dialog = page.get_by_test_id("card-back-name")
-
-    # ---- DESCRIPTION ----
+    # Add details in order
     if card_data.get("description"):
-        try:
-            # Click the "Add a more detailed description..." button
-            desc_btn = dialog.locator('[data-testid="description-button"]')
-            if desc_btn.count() > 0:
-                desc_btn.click()
-                page.wait_for_timeout(500)
+        _add_description(page, dialog, card_data["description"])
 
-                # Find the description textarea/editor and type
-                # We explicitly exclude the title input to avoid overwriting it
-                desc_editor = dialog.locator('textarea:not([data-testid="card-back-title-input"]), [data-testid="editor-input"]')
-                if desc_editor.count() == 0:
-                    desc_editor = dialog.locator('[role="textbox"]:not([data-testid="card-back-title-input"])')
-                
-                if desc_editor.count() > 0:
-                    desc_editor.first.fill(card_data["description"])
-                    page.wait_for_timeout(300)
-
-                    # Click Save button
-                    save_btn = dialog.locator('[data-testid="description-save-button"]')
-                    if save_btn.count() > 0:
-                        save_btn.click()
-                    else:
-                        # Fallback: find any Save button near the description
-                        save_btn = dialog.locator('button:has-text("Save")').first
-                        save_btn.click()
-                    page.wait_for_timeout(500)
-
-                print(f"  Description added for '{card_data['title']}'")
-        except Exception as e:
-            print(f"  Warning: Failed to add description for '{card_data['title']}': {e}")
-
-    # ---- LABELS ----
     if card_data.get("labels"):
-        try:
-            for label in card_data["labels"]:
-                label_name = label if isinstance(label, str) else label.get("name")
-                
-                # Robustly find the button to open labels popover
-                # Try sidebar 'Labels' button first, then inline '+' button, then 'Add to card' menu
-                selectors = [
-                    '[data-testid="card-back-labels-button"]',
-                    'button:has-text("Labels")',
-                    'button[aria-label="Add a label"]',
-                    'button[aria-label="Labels"]'
-                ]
-                
-                opened = False
-                for sel in selectors:
-                    btn = dialog.locator(sel).first
-                    if btn.count() > 0:
-                        btn.click(force=True)
-                        page.wait_for_timeout(1000)
-                        if page.locator('[data-testid="popover-container"]').count() > 0:
-                            opened = True
-                            break
-                
-                if not opened:
-                    # Try 'Add to card' menu as last resort
-                    add_btn = page.get_by_test_id("card-back-add-to-card-button")
-                    if add_btn.count() > 0:
-                        add_btn.click()
-                        page.wait_for_timeout(500)
-                        label_opt = page.locator('button:has-text("Labels")')
-                        if label_opt.count() > 0:
-                            label_opt.first.click()
-                            page.wait_for_timeout(1000)
-                            opened = True
-                
-                if not opened:
-                    print(f"  Warning: Could not open labels popover for '{card_data['title']}'")
-                    continue
+        _add_labels(page, dialog, card_data["labels"])
 
-                # Search and select in popover
-                # Be VERY patient and thorough here
-                # Try multiple possible search inputs
-                search_input = page.locator('input[placeholder*="Search labels"], input[placeholder="Search"], [data-testid="labels-search-input"]').first
-                if search_input.count() == 0:
-                    search_input = page.get_by_placeholder("Search labels...")
-                
-                if search_input.count() > 0:
-                    search_input.wait_for(state="visible", timeout=5000)
-                    search_input.fill(label_name)
-                    page.wait_for_timeout(1500) # Wait for search results to populate
-                    
-                    # 1. Try to find a button with exact label name
-                    selectors = [
-                        f'button:has-text("{label_name}")',
-                        f'span:has-text("{label_name}")',
-                        f'div:has-text("{label_name}")',
-                        f'[data-testid="card-label"]:has-text("{label_name}")',
-                        f'[aria-label*="{label_name}"]'
-                    ]
-                    
-                    found = False
-                    # Look inside the popover explicitly
-                    container = page.locator('[data-testid="popover-container"], [role="dialog"]').last
-                    
-                    for sel in selectors:
-                        # Use a more flexible text match
-                        # Trello labels can have surrounding icons or extra spaces
-                        target = container.locator(sel).first
-                        if target.count() > 0 and target.is_visible():
-                            print(f"    ✓ Found label element via {sel}")
-                            target.click()
-                            page.wait_for_timeout(500)
-                            found = True
-                            break
-                    
-                    if not found:
-                        # 1.5 Try any button/span containing text (case insensitive)
-                        # This is very broad but helpful
-                        try:
-                            # Use regex for case-insensitive match
-                            res = container.get_by_role("button").filter(has_text=re.compile(f"^{re.escape(label_name)}$", re.IGNORECASE)).first
-                            if res.count() == 0:
-                                res = container.locator(f':text-is("{label_name}")').first
-                                
-                            if res.count() > 0 and res.is_visible():
-                                print(f"    ✓ Found label by flexible text match")
-                                res.click(force=True)
-                                page.wait_for_timeout(500)
-                                found = True
-                        except Exception:
-                            pass
-                    
-                    if not found:
-                        # 2. Try to find any element with the name
-                        # Trello sometimes has it in a div or span
-                        res = container.locator(f':text("{label_name}")').first
-                        if res.count() > 0 and res.is_visible():
-                            print(f"    ✓ Found label text element for '{label_name}'")
-                            res.click(force=True)
-                            page.wait_for_timeout(500)
-                            found = True
-                    
-                    if not found:
-                        print(f"    × Label '{label_name}' not found in search results, attempting to create...")
-                        # 3. Create if not found
-                        create_btn = page.locator('button:has-text("Create a new label")')
-                        if create_btn.count() > 0:
-                            create_btn.click(force=True)
-                            page.wait_for_timeout(500)
-                            
-                            # Find the label title input
-                            name_in = page.locator('label:has-text("Title")').locator("..").locator("input[type='text']").first
-                            if name_in.count() == 0:
-                                name_in = page.locator('input[type="text"]').last
-                            if name_in.count() > 0:
-                                name_in.fill(label_name)
-                            
-                            if not isinstance(label, str) and label.get("color"):
-                                color_val = label["color"]
-                                # match exactly the color tile testid (not the light/dark version unless specified)
-                                color_btn = page.locator(f'button[data-color="{color_val}"], button[data-testid="color-tile-{color_val}"]').first
-                                if color_btn.count() > 0:
-                                    color_btn.click(force=True)
-                            
-                            submit_btn = page.get_by_test_id("create-label-submit-button")
-                            if submit_btn.count() == 0:
-                                submit_btn = page.locator('[data-testid="popover-container"], [role="dialog"]').last.locator('button').filter(has_text=re.compile(r"^Create$"))
-                            
-                            if submit_btn.count() > 0:
-                                submit_btn.first.click(force=True)
-                                page.wait_for_timeout(500)
-                                print(f"    ✓ Created new label '{label_name}'")
-                                found = True
-                            else:
-                                print(f"    × Could not find 'Create' submit button for label '{label_name}'")
-                else:
-                    print(f"    × Search input not found in labels popover for '{label_name}'")
-                    
-                # Close popover safely without hitting Escape (which might close the card)
-                if page.locator('[data-testid="popover-container"]').count() > 0:
-                    close_btn = page.locator('[data-testid="popover-close-button"]').first
-                    if close_btn.count() > 0:
-                        close_btn.click(force=True)
-                    page.wait_for_timeout(500)
-            
-            print(f"  Labels added for '{card_data['title']}'")
-        except Exception as e:
-            print(f"  Warning: Failed to add labels for '{card_data['title']}': {e}")
-
-    # ---- CHECKLIST ----
     if card_data.get("checklist"):
-        try:
-            # Click the "Checklist" button (sidebar button with ChecklistIcon)
-            checklist_btn = dialog.locator('button:has([data-testid="ChecklistIcon"])').first
-            if checklist_btn.count() == 0:
-                 checklist_btn = dialog.locator('button:has-text("Checklist")').first
-            
-            if checklist_btn.count() > 0:
-                checklist_btn.click(force=True)
-                page.wait_for_timeout(1000)
+        _add_checklist(page, dialog, card_data["checklist"])
 
-                # Click the "Add" button in the checklist popover
-                add_checklist = page.locator('[data-testid="checklist-add-button"]')
-                if add_checklist.count() > 0:
-                    add_checklist.click()
-                    page.wait_for_timeout(1000)
-
-                # Add items to the checklist
-                for item in card_data["checklist"]:
-                    item_name = item["name"] if isinstance(item, dict) else item
-                    is_checked = item.get("checked", False) if isinstance(item, dict) else False
-
-                    item_input = dialog.get_by_placeholder("Add an item")
-                    if item_input.count() > 0:
-                        item_input.fill(item_name)
-                        item_input.press("Enter")
-                        page.wait_for_timeout(700)  # Wait for item to render
-
-                        # If the item was checked in the source board, tick it now
-                        if is_checked:
-                            # Find the checkbox container for this specific item
-                            item_container = dialog.locator('[data-testid="check-item-container"]').filter(
-                                has_text=item_name
-                            ).first
-                            
-                            checkbox = item_container.locator('[data-testid="clickable-checkbox"]')
-                            if checkbox.count() > 0:
-                                checkbox.click()
-                                page.wait_for_timeout(500)
-                                print(f"    ✓ Checked: '{item_name}'")
-
-                # Close the "Add an item" input
-                page.keyboard.press("Escape")
-                page.wait_for_timeout(300)
-
-            print(f"  Checklist added for '{card_data['title']}' ({len(card_data['checklist'])} items)")
-        except Exception as e:
-            print(f"  Warning: Failed to add checklist for '{card_data['title']}': {e}")
-
-    # ---- ATTACHMENTS ----
     if card_data.get("attachments"):
-        try:
-            for att in card_data["attachments"]:
-                att_name = att.get("name") if isinstance(att, dict) else att
-                att_url = att.get("url") if isinstance(att, dict) else ""
-                
-                if not att_url:
-                    continue
-                
-                # Click the "Attachment" button
-                att_btn = dialog.locator('button:has-text("Attachment")')
-                if att_btn.count() == 0:
-                    att_btn = dialog.locator('button:has([data-testid="AttachmentIcon"])')
-                
-                if att_btn.count() > 0:
-                    att_btn.first.click(force=True)
-                    page.wait_for_timeout(1000)
-                    
-                    # Use absolute popover scoping for inputs to avoid multiple matches
-                    popover = page.locator('[data-testid="popover-container"], [role="dialog"]').last
-                    
-                    search_input_att = popover.get_by_placeholder("Paste any link here...")
-                    if search_input_att.count() > 0:
-                        search_input_att.fill(att_url)
-                        page.wait_for_timeout(500)
-                        
-                        # Optionally fill the name
-                        name_in_att = popover.locator('input[id="attachmentName"]')
-                        if name_in_att.count() > 0 and att_name:
-                            name_in_att.fill(att_name)
-                        
-                        # Click Add / Insert inside the popover
-                        target_btn = popover.locator('button:has-text("Insert"), button:has-text("Add")').last
-                        if target_btn.count() > 0:
-                            target_btn.click()
-                            # IMPORTANT: Wait for the attachment to actually upload/process
-                            print(f"    - Uploading attachment: {att_name}...")
-                            page.wait_for_timeout(3000) 
-                        else:
-                            print(f"    × Could not find 'Add' button for attachment")
-            
-            print(f"  Attachments added for '{card_data['title']}'")
-        except Exception as e:
-            print(f"  Warning: Failed to add attachments for '{card_data['title']}': {e}")
+        _add_attachments(page, dialog, card_data["attachments"])
 
-    # ---- COVER ----
     if card_data.get("cover"):
-        try:
-            cover_data = card_data["cover"]
-            # Open Cover popover
-            cover_btn = dialog.locator('[data-testid="card-back-cover-button"]')
-            if cover_btn.count() == 0:
-                cover_btn = dialog.locator('button:has-text("Cover")')
-            
-            if cover_btn.count() > 0:
-                cover_btn.first.click(force=True)
-                page.wait_for_timeout(1000)
-                
-                popover = page.locator('[data-testid="popover-container"], [role="dialog"]').last
-                
-                if cover_data.get("type") == "color":
-                    color_val = cover_data.get("value") or cover_data.get("style")
-                    color_btn = popover.locator(f'button[data-color="{color_val}"], button[data-testid*="color-tile-{color_val}"]').first
-                    if color_btn.count() == 0 and "rgb" in str(color_val):
-                        color_btn = popover.locator(f'button[style*="{color_val}"]').first
-                    
-                    if color_btn.count() > 0:
-                        color_btn.click(force=True)
-                        page.wait_for_timeout(500)
-                        print(f"    ✓ Set color cover: {color_val}")
-                    else:
-                        print(f"    × Could not find color tile for '{color_val}'")
-                
-                elif cover_data.get("type") == "image":
-                    # For images, give Trello even more time to process the added attachments
-                    page.wait_for_timeout(3000)
-                    
-                    # Re-locate popover as it might have refreshed
-                    popover = page.locator('[data-testid="popover-container"], [role="dialog"]').last
-                    att_covers = popover.locator('[data-testid="cover-attachment-item"]')
-                    
-                    if att_covers.count() > 0:
-                        att_covers.first.click()
-                        page.wait_for_timeout(500)
-                        print(f"    ✓ Set image cover from attachment")
-                    else:
-                        img_btns = popover.locator('button[style*="background-image"]')
-                        if img_btns.count() > 0:
-                            img_btns.first.click()
-                            page.wait_for_timeout(500)
-                            print(f"    ✓ Set image cover via background-image button")
-                
-                # Close popover via the close button specifically
-                close_pop_btn = popover.locator('[data-testid="popover-close-button"]')
-                if close_pop_btn.count() > 0:
-                    close_pop_btn.click(force=True)
-                else:
-                    page.keyboard.press("Escape")
-                page.wait_for_timeout(500)
+        _add_cover(page, dialog, card_data["cover"])
 
-        except Exception as e:
-            print(f"  Warning: Failed to set cover for '{card_data['title']}': {e}")
-
-    # ---- COMMENTS ----
     if card_data.get("comments"):
-        try:
-            for comment in card_data["comments"]:
-                # Click the "Write a comment..." skeleton button
-                comment_input = dialog.locator('[data-testid="card-back-new-comment-input-skeleton"]')
-                if comment_input.count() > 0:
-                    comment_input.click()
-                    page.wait_for_timeout(500)
+        _add_comments(page, dialog, card_data["comments"])
 
-                    # Type in the comment editor
-                    comment_editor = dialog.locator('[role="textbox"]').last
-                    if comment_editor.count() > 0:
-                        comment_editor.fill(comment)
-                        page.wait_for_timeout(300)
+    # Close modal
+    _close_card_modal(page)
 
-                        # Submit comment with Save button
-                        save_btn = dialog.locator('button:has-text("Save")').first
-                        if save_btn.count() > 0:
-                            save_btn.click()
-                            page.wait_for_timeout(500)
-
-            print(f"  Comments added for '{card_data['title']}' ({len(card_data['comments'])} comments)")
-        except Exception as e:
-            print(f"  Warning: Failed to add comments for '{card_data['title']}': {e}")
-
-    # ---- CLOSE DIALOG ----
-    close_btn = dialog.locator('[aria-label="Close dialog"]')
-    if close_btn.count() > 0:
-        close_btn.click()
-    else:
-        page.keyboard.press("Escape")
-
-    page.wait_for_timeout(500)
-
-    # Wait for card-back-name to close
-    try:
-        page.get_by_test_id("card-back-name").wait_for(state="hidden", timeout=10000)
-    except Exception:
-        # Fallback: press Escape again in case a sub-dialog was open
-        page.keyboard.press("Escape")
-        page.wait_for_timeout(500)
-        try:
-            page.get_by_test_id("card-back-name").wait_for(state="hidden", timeout=5000)
-        except Exception:
-            pass
-
-    print(f"  Card '{card_data['title']}' complete!")
+    print(f"  ✓ Card '{title}' complete!")
