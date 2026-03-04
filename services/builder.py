@@ -592,6 +592,211 @@ def _add_cover(page, dialog, cover_data):
         _close_popover(page)
 
 
+def _add_members(page, dialog, members):
+    """Adds members to the card."""
+    try:
+        if not members:
+            return
+
+        # Find and click the Members button
+        members_btn = page.locator('[data-testid="card-back-members-button"]')
+        if members_btn.count() == 0:
+            members_btn = page.get_by_role("button", name="Members")
+
+        if members_btn.count() > 0:
+            # Open the members popover once for all additions if possible
+            for member_name in members:
+                # Re-open if closed
+                popover = page.locator('[data-testid="popover-container"], [role="dialog"]').last
+                if popover.count() == 0 or not popover.is_visible():
+                    members_btn.first.click(force=True)
+                    page.wait_for_timeout(1000)
+                    popover = page.locator('[data-testid="popover-container"], [role="dialog"]').last
+
+                search_input = popover.get_by_role("textbox", name="Search members")
+                if search_input.count() == 0:
+                    search_input = popover.locator('input[placeholder*="Search"]').first
+
+                if search_input.count() > 0:
+                    search_input.fill(member_name)
+                    page.wait_for_timeout(2000) # Wait longer for search results
+                    
+                    # Look for the member in the results
+                    # Trello search results usually have the name as text
+                    result = popover.locator(f'ul li:has-text("{member_name}")').first
+                    if result.count() == 0:
+                        result = popover.locator(f'text="{member_name}"').first
+                    
+                    if result.count() > 0:
+                        result.click(force=True)
+                        page.wait_for_timeout(800)
+                        print(f"    ✓ Member '{member_name}' added")
+                    else:
+                        page.keyboard.press("Enter")
+                        page.wait_for_timeout(800)
+                        print(f"    ? Member '{member_name}' (Enter pressed)")
+                
+                # Close popover to reset search for next member
+                _close_popover(page)
+
+            print(f"    ✓ Members processing done")
+    except Exception as e:
+        print(f"    × Members failed: {e}")
+        _close_popover(page)
+
+
+def _add_dates(page, dialog, due_date):
+    """Sets the due date for the card."""
+    try:
+        if not due_date:
+            return
+
+        # Click the Dates button
+        dates_btn = page.get_by_role("button", name="Dates")
+        if dates_btn.count() == 0:
+            dates_btn = page.locator('button:has-text("Dates")')
+        
+        if dates_btn.count() > 0:
+            dates_btn.first.click(force=True)
+            page.wait_for_timeout(1000)
+
+            popover = page.locator('[data-testid="popover-container"], [role="dialog"]').last
+            
+            # Trello's date popover has input fields for start date and due date.
+            # We want the due date field which is usually labeled as such.
+            date_input = popover.locator('input[data-testid="due-date-field"]')
+            if date_input.count() == 0:
+                date_input = popover.locator('input[data-testid="date-input"]')
+            
+            if date_input.count() == 0:
+                # Fallback: look for an enabled text input with a date-like placeholder
+                inputs = popover.locator('input[type="text"]:not([disabled])').all()
+                for inp in inputs:
+                    if "/" in (inp.get_attribute("placeholder") or ""):
+                        date_input = inp
+                        break
+            
+            if date_input:
+                if isinstance(date_input, list):
+                    target = date_input[0]
+                else:
+                    target = date_input.first
+                
+                # Split due_date into date and time...
+                date_val = due_date
+                time_val = "12:00 PM"
+                if "," in due_date:
+                    parts = due_date.split(",")
+                    date_val = parts[0].strip()
+                    time_val = parts[1].strip()
+                
+                target.fill(date_val)
+                page.wait_for_timeout(300)
+                
+                time_input = popover.locator('input[placeholder*="time"], input[placeholder*="Time"]').first
+                if time_input.count() > 0:
+                    time_input.fill(time_val)
+                    page.wait_for_timeout(300)
+
+                # Find Save button in the popover or globally if needed
+                save_btn = popover.locator('button:has-text("Save")').first
+                if save_btn.count() == 0:
+                    save_btn = page.locator('[role="dialog"] button:has-text("Save")').last
+                
+                if save_btn.count() > 0:
+                    save_btn.click(force=True)
+                    page.wait_for_timeout(1500)
+                    print(f"    ✓ Due date set: {date_val} {time_val}")
+                else:
+                    target.press("Enter")
+                    page.wait_for_timeout(1000)
+                    # If Enter didn't work, or if it closed the popover without saving,
+                    # we still consider it a failure to save via button.
+                    print(f"    × Save button not found in date popover")
+                    _close_popover(page)
+            else:
+                print(f"    × Date input not found in popover")
+                _close_popover(page)
+    except Exception as e:
+        print(f"    × Dates failed: {e}")
+        _close_popover(page)
+
+
+def _add_custom_fields(page, dialog, custom_fields):
+    """Adds custom fields to the card."""
+    try:
+        if not custom_fields:
+            return
+
+        for label, value in custom_fields.items():
+            print(f"    - Setting custom field '{label}' to '{value}'...")
+            
+            # Step 1: Open the field if it already appears in the modal
+            field_item = dialog.locator(f'[data-testid="custom-field-item"]:has-text("{label}")')
+            if field_item.count() > 0:
+                field_item.first.click(force=True)
+            else:
+                # Step 2: Use the sidebar button if field isn't visible
+                cf_sidebar = page.locator('[data-testid="card-back-custom-fields-button"]')
+                if cf_sidebar.count() == 0:
+                    cf_sidebar = page.get_by_role("button", name="Custom Fields")
+                
+                if cf_sidebar.count() > 0:
+                    cf_sidebar.first.click(force=True)
+                    page.wait_for_timeout(1000)
+                    popover = page.locator('[data-testid="popover-container"], [role="dialog"]').last
+                    field_opt = popover.get_by_text(label)
+                    if field_opt.count() > 0:
+                        field_opt.first.click()
+                        page.wait_for_timeout(800)
+                    else:
+                        print(f"    × Field '{label}' not found in Custom Fields menu")
+                        _close_popover(page)
+                        continue
+                else:
+                    print(f"    × Custom Fields sidebar button not found")
+                    continue
+
+            # Step 3: Fill the value
+            # This depends on field type. We'll try some common ones.
+            popover = page.locator('[data-testid="popover-container"], [role="dialog"]').last
+            
+            # Type 1: Text/Number input
+            text_input = popover.locator('input[type="text"], input[type="number"], textarea').first
+            if text_input.count() > 0 and text_input.is_visible():
+                text_input.fill(value)
+                page.keyboard.press("Enter")
+            
+            # Type 2: Date
+            elif "Date" in label:
+                # Try setting date via input if available in popover
+                date_input = popover.locator('input[data-testid="date-input"]').first
+                if date_input.count() > 0:
+                    date_input.fill(value)
+                    page.keyboard.press("Enter")
+                else:
+                    # Fallback: just try to type and enter
+                    page.keyboard.type(value)
+                    page.keyboard.press("Enter")
+            
+            # Type 3: Dropdown
+            else:
+                option = popover.get_by_text(value, exact=True)
+                if option.count() > 0:
+                    option.first.click()
+                else:
+                    page.keyboard.type(value)
+                    page.keyboard.press("Enter")
+            
+            page.wait_for_timeout(800)
+            _close_popover(page)
+
+        print(f"    ✓ Custom fields done")
+    except Exception as e:
+        print(f"    × Custom fields failed: {e}")
+        _close_popover(page)
+
+
 @retry(times=2, delay=2)
 def create_card(page, list_container, card_data):
     """Creates a card and fills in all its details."""
@@ -639,6 +844,15 @@ def create_card(page, list_container, card_data):
 
     if card_data.get("checklist"):
         _add_checklist(page, dialog, card_data["checklist"])
+    
+    if card_data.get("members"):
+        _add_members(page, dialog, card_data["members"])
+    
+    if card_data.get("Date"):
+        _add_dates(page, dialog, card_data["Date"])
+
+    if card_data.get("custom_fields"):
+        _add_custom_fields(page, dialog, card_data["custom_fields"])
 
     if card_data.get("attachments"):
         _add_attachments(page, dialog, card_data["attachments"])

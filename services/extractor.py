@@ -1,5 +1,67 @@
 from utils.retry import retry
 import os
+import re
+import datetime
+
+
+def get_month_number(month_str):
+    """Converts month name or abbreviation to month number."""
+    months = {
+        'jan': 1, 'january': 1,
+        'feb': 2, 'february': 2,
+        'mar': 3, 'march': 3,
+        'apr': 4, 'april': 4,
+        'may': 5,
+        'jun': 6, 'june': 6,
+        'jul': 7, 'july': 7,
+        'aug': 8, 'august': 8,
+        'sep': 9, 'september': 9,
+        'oct': 10, 'october': 10,
+        'nov': 11, 'november': 11,
+        'dec': 12, 'december': 12
+    }
+    return months.get(month_str.lower()[:3])
+
+
+def parse_trello_date(date_str):
+    """Parses Trello date strings (like '2 Mar, 10:18' or 'Mar 4') to DD/MM/YYYY."""
+    if not date_str:
+        return ""
+    
+    try:
+        # Example: '2 Mar, 10:18' or '2 Mar'
+        # Remove extra text like status
+        clean_str = date_str.split('\n')[0].split(',')[0].strip()
+        
+        # Look for Day and Month
+        # Pattern: '2 Mar' or 'Mar 4' or '02/03/2026'
+        if re.match(r'^\d+/\d+/\d+$', clean_str):
+            return clean_str
+            
+        match = re.search(r'(\d+)\s+([A-Za-z]+)', clean_str)
+        if match:
+            day = int(match.group(1))
+            month = get_month_number(match.group(2))
+        else:
+            match = re.search(r'([A-Za-z]+)\s+(\d+)', clean_str)
+            if match:
+                month = get_month_number(match.group(1))
+                day = int(match.group(2))
+            else:
+                return clean_str
+
+        # If we have month and day, assume current year unless year is present
+        year = datetime.datetime.now().year
+        year_match = re.search(r'\b(20\d{2})\b', date_str)
+        if year_match:
+            year = int(year_match.group(1))
+            
+        if day and month:
+            return f"{day:02d}/{month:02d}/{year}"
+            
+    except:
+        pass
+    return date_str
 
 
 def extract_board(page):
@@ -93,12 +155,68 @@ def extract_card(page, card_locator):
     except:
         pass
 
-    # ---- DUE DATE ----
-    due_date = ""
+    # ---- MEMBERS ----
+    members = []
     try:
-        due = dialog.locator('[data-testid="due-date-badge"]')
-        if due.count() > 0:
-            due_date = due.inner_text().strip()
+        # Assigned members in Trello are strictly in this container
+        container = dialog.locator('[data-testid="card-back-members-container"]')
+        if container.count() > 0:
+            member_elements = container.locator('[data-testid="member-avatar"], button[title]').all()
+            for el in member_elements:
+                title = el.get_attribute("title") or el.get_attribute("aria-label") or ""
+                # Heuristic: Assigned member titles always have (username)
+                if title and "(" in title and ")" in title:
+                    name = title.split("(")[0].strip()
+                    if name and name not in members and name != "Members":
+                        members.append(name)
+        
+        # Backup: Search for a header labeled "Members" but only look in its immediate sibling
+        if not members:
+            header = dialog.locator('h3').filter(has_text=re.compile(r"^Members$", re.I)).first
+            if header.count() > 0:
+                parent = header.locator('xpath=..')
+                member_elements = parent.locator('button[title]').all()
+                for el in member_elements:
+                    title = el.get_attribute("title") or ""
+                    if title and "(" in title and ")" in title:
+                        name = title.split("(")[0].strip()
+                        if name and name not in members:
+                            members.append(name)
+    except:
+        pass
+
+    # ---- DATE (Extracted and parsed to DD/MM/YYYY) ----
+    manual_date = ""
+    try:
+        # Look for the header "Due date" or "Date"
+        date_header = dialog.locator('h3').filter(has_text=re.compile(r"^(Due date|Date)$", re.I)).first
+        if date_header.count() > 0:
+            parent = date_header.locator('xpath=..')
+            inner = parent.inner_text().replace(date_header.inner_text(), "").strip()
+            # The first line is the date string
+            date_str = inner.split('\n')[0].strip()
+            # If it has a comma, the part before it is the date, after is time
+            raw_date = date_str.split(',')[0].strip()
+            raw_time = date_str.split(',')[1].strip() if ',' in date_str else ""
+            
+            parsed_d = parse_trello_date(raw_date)
+            if parsed_d:
+                manual_date = f"{parsed_d}, {raw_time}" if raw_time else parsed_d
+    except:
+        pass
+
+    # ---- CUSTOM FIELDS (Power-ups) ----
+    custom_fields = {}
+    try:
+        cf_items = dialog.locator('[data-testid="custom-field-item"]')
+        for c in range(cf_items.count()):
+            item = cf_items.nth(c)
+            label_el = item.locator('[data-testid="custom-field-item-label"]')
+            value_el = item.locator('[data-testid="custom-field-item-value"]')
+            if label_el.count() > 0 and value_el.count() > 0:
+                label = label_el.inner_text().strip()
+                value = value_el.inner_text().strip()
+                custom_fields[label] = value
     except:
         pass
 
@@ -170,8 +288,10 @@ def extract_card(page, card_locator):
         "title": card_title,
         "description": description,
         "labels": labels,
+        "members": members,
+        "Date": manual_date,
+        "custom_fields": custom_fields,
         "checklist": checklist_items,
-        "due_date": due_date,
         "attachments": attachments,
         "cover": cover,
         "comments": comments
