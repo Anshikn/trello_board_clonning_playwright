@@ -40,11 +40,26 @@ python main.py
 
 ## Project Structure
 
-- `main.py`: The entry point for the cloning process.
-- `services/extractor.py`: Extracts data from the source board.
-- `services/builder.py`: Rebuilds the extracted board at the new destination.
-- `config.py`: Configuration settings.
-- `TRELLO_UI_REFERENCE.md`: Reference for Trello's DOM structure and Playwright selectors.
+### Core Logic
+- `main.py`: The main entry point that orchestrates the extraction and rebuilding process.
+- `services/extractor.py`: Handles navigation to the source board and extracting card details (labels, members, dates, etc.).
+- `services/builder.py`: Implements the logic to create a new board and populate it with the extracted data.
+- `utils/retry.py`: A utility decorator used throughout the project to handle flakiness in Trello's dynamic UI.
+
+### Data & Configuration
+- `config.py`: Central configuration for board URLs, names, and headless mode settings.
+- `trello_auth.json`: Stores authentication state (cookies/localStorage) to bypass manual login.
+- `data/board_data.json`: The intermediate JSON file generated after extraction, containing all board details.
+- `data/attachments/`: Local directory where card attachments are temporarily downloaded during extraction.
+
+### Auxiliary & Debugging Tools
+- `reauth.py`: A helper script to launch a browser, allow you to log in manually, and save the session to `trello_auth.json`.
+- `codegen.py`: Used with Playwright's code generation tool to inspect Trello's latest selectors.
+- `debug_*.py` / `dump_*.py`: A collection of focused scripts used to troubleshoot specific UI components (e.g., labels, covers, dates).
+- `*.html` / `*.png`: Snapshots and HTML dumps of the Trello UI captured during development or execution failures for selector analysis.
+
+### Documentation
+- `TRELLO_UI_REFERENCE.md`: A comprehensive guide to Trello's DOM structure, including the specific `data-testid` and `aria-label` selectors used in this project.
 
 ## Troubleshooting
 

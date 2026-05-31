@@ -14,14 +14,21 @@ This document serves as a guide to Trello's DOM structure and key Playwright sel
 *   **Card Container**: `[data-testid="list-card"]`
 *   **Card Title**: `[data-testid="card-name"]`
 *   **Add a Card Button (at bottom of list)**: `[data-testid="list-add-card-button"]`
+*   **Card Composer Textarea**: `[data-testid="list-card-composer-textarea"]`
+*   **Composer Add Button**: `[data-testid="list-card-composer-add-card-button"]`
+
+---
 
 ## 2. Card Modal (Back of Card)
 
 The main container for an opened card is usually identifiable by the card title area `[data-testid="card-back-name"]`.
 
 ### Basic Details
-*   **Description Content**: `[data-testid="description-content-area"]`
-*   **Comment Input Area**: `[data-testid="card-back-new-comment-input-skeleton"]` -> followed by actual text editor `[data-testid="click-wrapper"]` or tiptap content-editable area.
+*   **Description Area**: `[data-testid="description-content-area"]`
+*   **Description Edit Trigger**: `[data-testid="description-edit-button"]` or `[data-testid="click-wrapper"]` (for new cards).
+*   **Rich Text Editor**: `[role="textbox"]` (ProseMirror based).
+*   **Description Save Button**: `[data-testid="description-save-button"]`
+*   **Comment Input Area**: `[data-testid="card-back-new-comment-input-skeleton"]` -> followed by actual text editor `[role="textbox"]`.
 *   **Save Comment Button**: `[data-testid="card-back-comment-save-button"]`
 
 ### Sidebar Buttons (Add to Card)
@@ -37,63 +44,75 @@ Trello groups addition actions in the right sidebar. Due to responsiveness or st
 ## 3. Popovers (Crucial Dynamics)
 
 Trello uses a global popover container that floats above the DOM. This makes scoped searches sometimes fail if you only search within the card modal. 
-*   **Global Popover Container**: `[data-testid="popover-container"]` or `[role="dialog"]` (specifically the last one in the DOM). ALWAYS scope searches within this container when interacting with popover elements to avoid accidentally clicking global elements (like the main header's "Create board" button).
-*   **Popover Close Button**: `[data-testid="popover-close-button"]`. (Avoid pressing "Escape" to close popovers during automation, as it might accidentally close the entire card modal if the popover closed quickly on its own).
+*   **Global Popover Container**: `[data-testid="popover-container"]` or `[role="dialog"]`. Always use `.last` to target the active one.
+*   **Popover Close Button**: `[data-testid="popover-close-button"]`. 
 
 ### A. Labels Popover
-1.  **Search Input**: 
-    *   `input[placeholder*="Search labels"]`
-    *   `[data-testid="labels-search-input"]`
+1.  **Search Input**: `input[placeholder*="Search labels"]`
 2.  **Label Selection (Finding an existing label)**:
-    *   Search within the popover for: `[data-testid="card-label"]:has-text("Your Label")`
-    *   Checkboxes for labels: `[data-testid="clickable-checkbox"]` next to the label span.
-3.  **Label Creation (If search yields no exact match)**:
+    *   **Selector**: `popover.locator('[data-testid="card-label"]').filter(has_text=re.compile(f'^{re.escape(label_name)}$'))`
+    *   **Selection Check**: Look for `[data-testid="card-label-checkmark"]` or `svg[data-testid="CheckIcon"]` to avoid toggling OFF.
+3.  **Label Creation**:
     *   **Create Button**: `button:has-text("Create a new label")`
-    *   **Title Input**: The `input[type="text"]` found near `label:has-text("Title")`
-    *   **Color Selection**: `button[data-testid="color-tile-{color_val}"]` (e.g., `color-tile-green`. *Note: avoid matching just `data-color="green"` as it might ambiguously click `green_light` or `green_dark` versions.*)
-    *   **Submit Button**: `[data-testid="create-label-submit-button"]` or `.locator('[data-testid="popover-container"], [role="dialog"]').last.locator('button').filter(has_text=re.compile(r"^Create$"))`
+    *   **Name Input**: `popover.locator('input').first`
+    *   **Color Selection**: `button[data-testid="color-tile-{color_val}"]` (e.g., `green`, `yellow`, `orange`).
+    *   **Submit Button**: `popover.locator('button').filter(has_text=re.compile(r"^Create$"))`
 
 ### B. Checklist Popover
-1.  **Add Checklist Confirmation Button**: `[data-testid="checklist-add-button"]`
-2.  **Checklist Container (Inside Card)**: `[data-testid="checklist"]`
-3.  **Checklist Title**: `[data-testid="checklist-title"]`
-4.  **Add Item Input**: `textarea[placeholder="Add an item"]` or `input[placeholder="Add an item"]`
-5.  **Individual Checklist Items**: `[data-testid="check-item-container"]`
-6.  **Toggling Checklist Checkbox**: `[data-testid="clickable-checkbox"]` or `input[type="checkbox"]` inside the item container.
+1.  **Add Checklist Confirmation**: `popover.locator('button').filter(has_text=re.compile(r"^(Add|Create)$"))`
+2.  **Add Item Input**: `textarea[placeholder="Add an item"]` or `page.get_by_placeholder("Add an item")`.
+3.  **Toggling Checklist Checkbox**: `[data-testid="clickable-checkbox"]` or `input[type="checkbox"]` inside `[data-testid="check-item-container"]`.
 
-### C. Attachments Popover
-1.  **URL Input (Paste Link)**: `input[placeholder*="Paste any link"]`
-2.  **Name Input (Display Text)**: `input#attachmentName`
-3.  **Insert/Add Button**: `button:has-text("Insert")` or `button:has-text("Add")` or `[data-testid="attachment-add-submit-button"]`
-4.  **Attachment List**: `[data-testid="attachment-list"]`
-5.  **Attachment Item**: `[data-testid="attachment-thumbnail"]`
+### C. Members Popover
+1.  **Trigger**: `[data-testid="card-back-members-button"]` or `button:has-text("Members")`.
+2.  **Assigned Members (on card)**: Found in `[data-testid="card-back-members-container"]`.
+3.  **Member Identification (Heuristic)**: Members are identifiable by `button[title]` where the title contains a username in parentheses, e.g., `Name (username)`.
+4.  **Search Input**: `[role="textbox"][name="Search members"]` or `input[placeholder*="Search"]`.
+5.  **Selection**: Typing the name and clicking the result or pressing `Enter`.
 
-### D. Cover Popover
-1.  **Color Selections**:
-    *   **Color Tile**: `button[data-color="{color_val}"]`
-    *   **Specific Hex Tile**: `button[data-testid*="color-tile-{color_val}"]`
+### D. Dates Popover
+1.  **Trigger**: `button:has-text("Dates")` or clicking the existing date badge/button.
+2.  **Date Input**: `input[data-testid="due-date-field"]` or the first input with a date placeholder.
+3.  **Date Format Requirement**: Trello's UI input typically expects `DD/MM/YYYY` (or `MM/DD/YYYY` depending on user locale, but `DD/MM/YYYY` is a safe target for consistent parsing).
+4.  **Time Input**: `input[placeholder*="time"]`.
+5.  **Save Button**: `[data-testid="save-date-button"]`, `button:has-text("Save")`, or `button[type="submit"]`.
+6.  **Verification**: The badge should update with the selected date and time.
+
+### E. Attachments Popover
+Trello now supports both URL pasting and local file uploads.
+
+1.  **Local File Upload**:
+    *   **Trigger**: `page.get_by_role("button", name="Choose a file")`
+    *   **Action**: Use `expect_file_chooser` logic.
+    *   **Fallback**: `input[type="file"]` (hidden).
+2.  **URL Input (Paste Link)**: `input[placeholder*="Paste any link"]`
+3.  **Insert/Add Button**: `button:has-text("Insert")` or `button:has-text("Add")`
+4.  **Verification**: Wait for `[data-testid="attachment-list"]` to contain text matching the filename.
+
+### F. Cover Popover
+1.  **Color Selections**: `button[data-color="{color_val}"]`
 2.  **Image Selections (From Attachments)**: 
     *   **Select Item**: `[data-testid="cover-attachment-item"]`
-    *   **Image Button**: `button[style*="background-image"]` (Useful as fallback if specific test-ids are missing).
-3.  **Remove Cover**: `button:has-text("Remove cover")`
+    *   **Fallback**: `button[style*="background-image"]`.
 
 ---
 
 ## 4. Header & Board Creation Flow
 
 *   **Global Add Menu Button**: `[data-testid="header-create-menu-button"]`
-*   **Create Board Option**: `[data-testid="header-create-board-button"]` or `button:has-text("Create board")`
+*   **Create Board Option**: `[data-testid="header-create-board-button"]`
 *   **Board Title Input**: `[data-testid="create-board-title-input"]`
 *   **Submit Create Board**: `[data-testid="create-board-submit-button"]`
-*   **Board Name Display (To confirm ready state)**: `[data-testid="board-name-display"]`
+*   **Board Name Display**: `[data-testid="board-name-display"]`
 
 ---
 
 ## 5. Playwright Automation Best Practices for Trello
-1.  **`force=True` on Clicks**: Trello's heavy use of absolute positioned overlapping layers (Atlantis components) can frequently result in "element intercepts pointer events" errors. Use `click(force=True)` for elements like checkboxes and sidebar buttons.
-2.  **Patience with Popovers**: Always `page.wait_for_timeout(500)` or explicitly wait for the `[data-testid="popover-container"]` visibility after clicking a button that should spawn a popover.
-3.  **Closing Popovers Safely**: Do not blindly send `page.keyboard.press("Escape")`. Use `[data-testid="popover-close-button"]` instead. If Trello autorenders away a popover, hitting Escape will accidentally close the card modal underneath it.
-4.  **Dynamic Rendering of Modals**: Always re-query `.locator()` structures instead of saving locators into memory for long periods, as React re-renders will cause `ElementHandle` or strict locators to go stale.
-5.  **Scope Within Active Popover**: Use `page.locator('[data-testid="popover-container"], [role="dialog"]').last` as your parent container when interacting with popover content (e.g., searching for a "Create" or "Add" button). Trello's DOM is large and global searches can accidentally interact with the wrong elements.
-6.  **Wait for Attachment Processing**: When uploading a new attachment by link, wait at least **3000ms** before trying to set it as a cover. Trello won't show the attachment in the Cover menu until it has finished processing the URL on their back-end.
-7.  **Identify Covers via Card Header**: Card covers can be extracted from `[data-testid="card-back-cover-container"]`.
+
+1.  **`force=True` on Clicks**: Essential for Trello's overlapping layers.
+2.  **Strict Text Matching**: When selecting labels, use regex `^Name$` to avoid selecting "Status Done" when searching for "Done".
+3.  **File Upload Handling**: Always use `page.expect_file_chooser()` for the "Choose a file" button to handle the OS native dialog.
+4.  **Patience with Popovers**: Use `page.wait_for_timeout(800)` after clicking menu buttons.
+5.  **Attachment Processing**: When uploading, wait for the thumbnail to appear in the card (`[data-testid="attachment-list"]`) before continuing or setting it as a cover.
+6.  **Avoid Escape Key**: Closing popovers with Escape can accidentally close the card modal. Use `[data-testid="popover-close-button"]` or click the card header area to dismiss.
+7.  **Scope Within Active Popover**: Always use `page.locator('[data-testid="popover-container"], [role="dialog"]').last` as the parent for popover interactions.
